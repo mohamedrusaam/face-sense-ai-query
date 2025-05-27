@@ -21,7 +21,7 @@ const ChatBot = () => {
     {
       id: "1",
       type: "bot",
-      content: "Hello! I'm your Face Recognition AI assistant. I can answer questions about registered faces, recognition statistics, and more. Try asking me something like 'Who was the last person registered?' or 'How many people are currently registered?'",
+      content: "Hello! I'm your Face Recognition AI assistant powered by OpenAI. I can answer questions about registered faces, recognition statistics, and more using real-time data from your database. Try asking me something like 'Who was the last person registered?' or 'How many people are currently registered?'",
       timestamp: new Date(),
     },
   ]);
@@ -29,7 +29,7 @@ const ChatBot = () => {
   const [isLoading, setIsLoading] = useState(false);
   const { toast } = useToast();
 
-  // Fetch registered faces for RAG context
+  // Fetch registered faces for display context
   const { data: registeredFaces } = useQuery({
     queryKey: ["registeredFaces"],
     queryFn: async () => {
@@ -42,51 +42,6 @@ const ChatBot = () => {
       return data;
     },
   });
-
-  // Simulate RAG-powered responses
-  const generateResponse = (query: string): string => {
-    const lowerQuery = query.toLowerCase();
-    
-    if (!registeredFaces || registeredFaces.length === 0) {
-      return "Currently, there are no registered faces in the system. Please register some faces first using the Registration tab.";
-    }
-
-    // Question about count
-    if (lowerQuery.includes("how many") || lowerQuery.includes("count")) {
-      return `There are currently ${registeredFaces.length} people registered in the system.`;
-    }
-
-    // Question about latest registration
-    if (lowerQuery.includes("last") || lowerQuery.includes("recent") || lowerQuery.includes("latest")) {
-      const latest = registeredFaces[0];
-      return `The last person registered was ${latest.name} on ${new Date(latest.created_at).toLocaleDateString()} at ${new Date(latest.created_at).toLocaleTimeString()}.`;
-    }
-
-    // Question about specific person
-    const nameMatch = registeredFaces.find(face => 
-      lowerQuery.includes(face.name.toLowerCase())
-    );
-    if (nameMatch) {
-      return `${nameMatch.name} was registered on ${new Date(nameMatch.created_at).toLocaleDateString()} at ${new Date(nameMatch.created_at).toLocaleTimeString()}.`;
-    }
-
-    // Question about all registered people
-    if (lowerQuery.includes("who") || lowerQuery.includes("list") || lowerQuery.includes("all")) {
-      const names = registeredFaces.map(face => face.name).join(", ");
-      return `The registered people are: ${names}.`;
-    }
-
-    // Question about time-related queries
-    if (lowerQuery.includes("when") || lowerQuery.includes("time")) {
-      const registrations = registeredFaces.map(face => 
-        `${face.name} (${new Date(face.created_at).toLocaleDateString()})`
-      ).join(", ");
-      return `Registration times: ${registrations}.`;
-    }
-
-    // Default response
-    return `I can help you with information about the ${registeredFaces.length} registered faces. You can ask me about registration counts, when someone was registered, who's in the system, or specific details about any registered person.`;
-  };
 
   const handleSendMessage = async () => {
     if (!inputMessage.trim()) return;
@@ -103,28 +58,49 @@ const ChatBot = () => {
     setIsLoading(true);
 
     try {
-      // Generate response using simulated RAG
-      const response = generateResponse(inputMessage);
-
-      // Store chat interaction in database
-      await supabase.from("chat_messages").insert({
-        query: inputMessage,
-        response: response,
+      console.log('Sending query to AI:', inputMessage);
+      
+      // Call the AI chat edge function
+      const { data, error } = await supabase.functions.invoke('ai-chat', {
+        body: { query: inputMessage }
       });
+
+      if (error) {
+        console.error('Edge function error:', error);
+        throw error;
+      }
+
+      console.log('AI response received:', data);
 
       const botMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         type: "bot",
-        content: response,
+        content: data.response || "I apologize, but I couldn't process your request at the moment. Please try again.",
         timestamp: new Date(),
       };
 
       setMessages(prev => [...prev, botMessage]);
+
+      toast({
+        title: "AI Response",
+        description: "Response generated using OpenAI ChatGPT with RAG",
+      });
+
     } catch (error) {
       console.error("Chat error:", error);
+      
+      const errorMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        type: "bot",
+        content: "I'm sorry, I encountered an error processing your request. Please make sure the system is properly configured and try again.",
+        timestamp: new Date(),
+      };
+
+      setMessages(prev => [...prev, errorMessage]);
+
       toast({
         title: "Chat Error",
-        description: "Failed to get response. Please try again.",
+        description: "Failed to get AI response. Please try again.",
         variant: "destructive",
       });
     } finally {
@@ -145,8 +121,11 @@ const ChatBot = () => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-white">
             <MessageSquare className="w-5 h-5" />
-            Face Recognition AI Assistant
+            Face Recognition AI Assistant (OpenAI ChatGPT + RAG)
           </CardTitle>
+          <p className="text-sm text-gray-400">
+            Powered by OpenAI's ChatGPT with real-time database context • {registeredFaces?.length || 0} faces registered
+          </p>
         </CardHeader>
         <CardContent className="flex-1 flex flex-col space-y-4">
           {/* Chat Messages */}
@@ -186,10 +165,10 @@ const ChatBot = () => {
               {isLoading && (
                 <div className="flex gap-3 justify-start">
                   <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center flex-shrink-0">
-                    <Bot className="w-4 h-4 text-white" />
+                    <Bot className="w-4 h-4 text-white animate-pulse" />
                   </div>
                   <div className="bg-gray-800 text-gray-100 p-3 rounded-lg">
-                    <p className="text-sm">Thinking...</p>
+                    <p className="text-sm">🤖 AI is thinking with OpenAI ChatGPT...</p>
                   </div>
                 </div>
               )}
@@ -202,7 +181,7 @@ const ChatBot = () => {
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Ask me about registered faces, recognition stats, or anything else..."
+              placeholder="Ask me about registered faces using AI-powered responses..."
               className="flex-1 bg-gray-800 border-gray-700 text-white placeholder:text-gray-500"
               disabled={isLoading}
             />
@@ -213,6 +192,10 @@ const ChatBot = () => {
             >
               <Send className="w-4 h-4" />
             </Button>
+          </div>
+          
+          <div className="text-xs text-gray-500 text-center">
+            💡 Try: "Who was registered last?", "How many people?", "When was [name] registered?"
           </div>
         </CardContent>
       </Card>
