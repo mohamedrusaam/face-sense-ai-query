@@ -1,11 +1,12 @@
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Webcam from "react-webcam";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Camera, Users, Eye } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery } from "@tanstack/react-query";
+import * as faceapi from 'face-api.js';
 
 interface Recognition {
   name: string;
@@ -19,7 +20,29 @@ interface Recognition {
 const LiveRecognition = () => {
   const [isRecognizing, setIsRecognizing] = useState(false);
   const [recognitions, setRecognitions] = useState<Recognition[]>([]);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const webcamRef = useRef<Webcam>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Load face-api.js models
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        const MODEL_URL = '/models';
+        await Promise.all([
+          faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+          faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+          faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+        ]);
+        setModelsLoaded(true);
+        console.log('Face-api.js models loaded for recognition');
+      } catch (error) {
+        console.error('Error loading face-api.js models:', error);
+      }
+    };
+
+    loadModels();
+  }, []);
 
   // Fetch registered faces
   const { data: registeredFaces } = useQuery({
@@ -35,35 +58,77 @@ const LiveRecognition = () => {
     },
   });
 
-  // Simulate face recognition processing
-  const simulateRecognition = () => {
-    if (!registeredFaces || registeredFaces.length === 0) return;
+  // Convert stored face encodings back to Float32Array
+  const getKnownFaceDescriptors = useCallback(() => {
+    if (!registeredFaces) return [];
+    
+    return registeredFaces.map(face => {
+      const descriptor = new Float32Array(
+        face.face_encoding.split(',').map(Number)
+      );
+      return {
+        name: face.name,
+        descriptor
+      };
+    });
+  }, [registeredFaces]);
 
-    // Simulate detecting faces with random positions
-    const mockRecognitions: Recognition[] = [];
-    const numFaces = Math.floor(Math.random() * 3) + 1; // 1-3 faces
+  // Real-time face recognition
+  const performRecognition = useCallback(async () => {
+    if (!webcamRef.current?.video || !modelsLoaded || !registeredFaces) return;
 
-    for (let i = 0; i < Math.min(numFaces, registeredFaces.length); i++) {
-      const randomFace = registeredFaces[Math.floor(Math.random() * registeredFaces.length)];
-      mockRecognitions.push({
-        name: randomFace.name,
-        confidence: 0.8 + Math.random() * 0.2, // 80-100% confidence
-        x: Math.random() * 400 + 50, // Random position
-        y: Math.random() * 300 + 50,
-        width: 120,
-        height: 150,
-      });
+    const video = webcamRef.current.video;
+    const knownFaces = getKnownFaceDescriptors();
+    
+    if (knownFaces.length === 0) return;
+
+    try {
+      const detections = await faceapi
+        .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+        .withFaceLandmarks()
+        .withFaceDescriptors();
+
+      const newRecognitions: Recognition[] = [];
+
+      for (const detection of detections) {
+        let bestMatch = { name: 'Unknown', confidence: 0 };
+        
+        // Compare with known faces
+        for (const knownFace of knownFaces) {
+          const distance = faceapi.euclideanDistance(detection.descriptor, knownFace.descriptor);
+          const confidence = Math.max(0, 1 - distance); // Convert distance to confidence
+          
+          if (confidence > 0.6 && confidence > bestMatch.confidence) { // Threshold of 0.6
+            bestMatch = { name: knownFace.name, confidence };
+          }
+        }
+
+        if (bestMatch.confidence > 0) {
+          const box = detection.detection.box;
+          newRecognitions.push({
+            name: bestMatch.name,
+            confidence: bestMatch.confidence,
+            x: box.x,
+            y: box.y,
+            width: box.width,
+            height: box.height,
+          });
+        }
+      }
+
+      setRecognitions(newRecognitions);
+    } catch (error) {
+      console.error('Recognition error:', error);
     }
+  }, [modelsLoaded, registeredFaces, getKnownFaceDescriptors]);
 
-    setRecognitions(mockRecognitions);
-  };
-
+  // Set up recognition interval
   useEffect(() => {
     let interval: NodeJS.Timeout;
     
-    if (isRecognizing) {
-      // Process frames every 2 seconds (as specified in requirements)
-      interval = setInterval(simulateRecognition, 2000);
+    if (isRecognizing && modelsLoaded) {
+      // Process frames every 1 second for real-time recognition
+      interval = setInterval(performRecognition, 1000);
     } else {
       setRecognitions([]);
     }
@@ -71,7 +136,7 @@ const LiveRecognition = () => {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isRecognizing, registeredFaces]);
+  }, [isRecognizing, modelsLoaded, performRecognition]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
@@ -79,10 +144,18 @@ const LiveRecognition = () => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-white">
             <Eye className="w-5 h-5" />
-            Live Face Recognition
+            Live Face Recognition {modelsLoaded ? "✓" : "⏳"}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
+          {!modelsLoaded && (
+            <div className="bg-yellow-600/20 border border-yellow-600/50 rounded-lg p-4">
+              <p className="text-yellow-200 text-sm">
+                Loading face recognition models for live detection...
+              </p>
+            </div>
+          )}
+
           {/* Recognition Stats */}
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-gray-800/50 p-4 rounded-lg">
@@ -111,6 +184,7 @@ const LiveRecognition = () => {
               <h3 className="text-lg font-semibold text-white">Live Video Stream</h3>
               <Button
                 onClick={() => setIsRecognizing(!isRecognizing)}
+                disabled={!modelsLoaded}
                 className={`${
                   isRecognizing 
                     ? "bg-red-600 hover:bg-red-700" 
@@ -135,7 +209,7 @@ const LiveRecognition = () => {
                     }}
                   />
                   
-                  {/* Face Recognition Overlays */}
+                  {/* Real Face Recognition Overlays */}
                   {recognitions.map((recognition, index) => (
                     <div
                       key={index}
@@ -159,6 +233,9 @@ const LiveRecognition = () => {
                   <div className="text-center">
                     <Camera className="w-12 h-12 mx-auto mb-2" />
                     <p>Click "Start Recognition" to begin live face detection</p>
+                    {!modelsLoaded && (
+                      <p className="text-sm mt-2">Waiting for models to load...</p>
+                    )}
                   </div>
                 </div>
               )}
